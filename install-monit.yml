@@ -1,0 +1,200 @@
+---
+- name: Install production-ready Prometheus + Node & Nginx exporters
+  hosts: monitoring
+  become: true
+  vars:
+    prometheus_version: "2.53.0"
+    prometheus_user: prometheus
+    prometheus_group: prometheus
+    install_dir: /usr/local/bin
+    config_dir: /etc/prometheus
+    data_dir: /var/lib/prometheus
+    prometheus_archive: "https://github.com/prometheus/prometheus/releases/download/v{{ prometheus_version }}/prometheus-{{ prometheus_version }}.linux-amd64.tar.gz"
+
+  pre_tasks:
+    - name: Create Prometheus system user
+      user:
+        name: "{{ prometheus_user }}"
+        system: true
+        shell: /usr/sbin/nologin
+
+    - name: Install prerequisites
+      apt:
+        name:
+          - curl
+          - tar
+          - prometheus-node-exporter
+          - nginx
+          - prometheus-nginx-exporter
+        state: present
+        update_cache: yes
+
+    - name: Install ACL package for privilege escalation
+      apt:
+        name: acl
+        state: present
+        update_cache: yes
+
+  tasks:
+    - name: Create directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ prometheus_user }}"
+        group: "{{ prometheus_group }}"
+        mode: '0755'
+      loop:
+        - "{{ config_dir }}"
+        - "{{ data_dir }}"
+        - "/var/log/prometheus"
+        - "{{ install_dir }}"
+
+    - name: Download Prometheus binary archive
+      get_url:
+        url: "{{ prometheus_archive }}"
+        dest: "/tmp/prometheus-{{ prometheus_version }}.tar.gz"
+        mode: '0644'
+
+    - name: Extract Prometheus binaries
+      unarchive:
+        src: "/tmp/prometheus-{{ prometheus_version }}.tar.gz"
+        dest: "/tmp"
+        remote_src: yes
+
+    - name: Install prometheus and promtool
+      copy:
+        src: "/tmp/prometheus-{{ prometheus_version }}.linux-amd64/{{ item }}"
+        dest: "{{ install_dir }}/{{ item }}"
+        owner: "{{ prometheus_user }}"
+        group: "{{ prometheus_group }}"
+        mode: '0755'
+        remote_src: yes
+      loop:
+        - prometheus
+        - promtool
+
+    - name: Install consoles and libraries
+      copy:
+        src: "/tmp/prometheus-{{ prometheus_version }}.linux-amd64/{{ item }}"
+        dest: "{{ config_dir }}/{{ item }}"
+        owner: "{{ prometheus_user }}"
+        group: "{{ prometheus_group }}"
+        mode: '0755'
+        remote_src: yes
+      loop:
+        - consoles
+        - console_libraries
+
+    - name: Cleanup extracted files
+      file:
+        path: "/tmp/prometheus-{{ prometheus_version }}.linux-amd64"
+        state: absent
+
+    - name: Deploy prometheus systemd service
+      copy:
+        dest: /etc/systemd/system/prometheus.service
+        content: |
+          [Unit]
+          Description=Prometheus Monitoring
+          Wants=network-online.target
+          After=network-online.target
+
+          [Service]
+          User={{ prometheus_user }}
+          Group={{ prometheus_group }}
+          Type=simple
+          ExecStart={{ install_dir }}/prometheus \
+            --config.file={{ config_dir }}/prometheus.yml \
+            --storage.tsdb.path={{ data_dir }} \
+            --web.console.templates={{ config_dir }}/consoles \
+            --web.console.libraries={{ config_dir }}/console_libraries \
+            --web.listen-address=:9090
+          Restart=on-failure
+
+          [Install]
+          WantedBy=multi-user.target
+        mode: '0644'
+      notify:
+        - Reload systemd
+        - Validate Prometheus config
+        - Restart Prometheus
+
+    - name: Deploy Prometheus config
+      copy:
+        dest: "{{ config_dir }}/prometheus.yml"
+        content: |
+          global:
+            scrape_interval: 15s
+            evaluation_interval: 15s
+
+          scrape_configs:
+            - job_name: prometheus
+              static_configs:
+                - targets: ['localhost:9090']
+            - job_name: node_exporter
+              static_configs:
+                - targets: ['127.0.0.1:9100']
+            - job_name: nginx_exporter
+              static_configs:
+                - targets: ['127.0.0.1:9113']
+        owner: "{{ prometheus_user }}"
+        group: "{{ prometheus_group }}"
+        mode: '0644'
+      notify: Validate Prometheus config
+
+    - name: Configure Nginx stub_status for exporter
+      copy:
+        dest: /etc/nginx/sites-available/default
+        content: |
+          server {
+            location /stub_status {
+              stub_status on;
+              allow 127.0.0.1;
+              deny all;
+            }
+          }
+      notify:
+          - Reload Nginx
+
+    - name: Configure nginx-exporter args
+      lineinfile:
+        path: /etc/default/prometheus-nginx-exporter
+        regexp: '^ARGS='
+        line: 'ARGS="-nginx.scrape-uri http://127.0.0.1:9113/stub_status"'
+      notify: Restart nginx_exporter
+
+    - name: Enable and start services
+      service:
+        name: "{{ item }}"
+        state: started
+        enabled: yes
+      loop:
+        - prometheus
+        - prometheus-node-exporter
+        - nginx
+        - prometheus-nginx-exporter
+
+  handlers:
+    - name: Reload systemd
+      systemd:
+        daemon_reload: yes
+
+    - name: Validate Prometheus config
+      command: "{{ install_dir }}/promtool check config {{ config_dir }}/prometheus.yml"
+      become_user: "{{ prometheus_user }}"
+
+    - name: Restart Prometheus
+      systemd:
+        name: prometheus
+        state: restarted
+        enabled: yes
+
+    - name: Reload Nginx
+      service:
+        name: nginx
+        state: reloaded
+
+    - name: Restart nginx_exporter
+      service:
+        name: prometheus-nginx-exporter
+        state: restarted
