@@ -1,0 +1,82 @@
+### STEP1: Get AMI ID.
+Amazon Linux 2:
+aws ec2 describe-images --owners amazon --filters "Name=name,Values=amzn2-ami-hvm-*-x86_64-gp2" --query "Images[*].[ImageId,CreationDate]" --output text | sort -k2 -r | head -n1 | awk '{print $1}'
+- ami-0c12cxxxxxxxx
+
+ubuntu:
+aws ec2 describe-images --owners 099720109477 --filters "Name=name,Values=ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*" --query 'Images[*].[ImageId,CreationDate]' --output text | sort -k2 -r | head -n1
+- ami-02158933xxxxxxxxx
+
+### STEP2: Launch the EC2 Instance.
+aws ec2 run-instances \
+  --image-id ami-021589336d30xxxxx \
+  --count 1 \
+  --instance-type t2.micro \
+  --key-name key \
+  --user-data file://apache.sh \
+  --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=WebServer-CLI}]' \
+  --network-interfaces '[{
+    "DeviceIndex": 0,
+    "SubnetId": "subnet-0cdb2485655cxxxxx",
+    "AssociatePublicIpAddress": true,
+    "Groups": ["sg-04b33221344dxxxxx"]
+  }]'
+
+### STEP3: Get the Public IP Address.
+aws ec2 describe-instances \
+  --filters "Name=tag:Name,Values=WebServer-CLI" \
+  --query "Reservations[*].Instances[*].PublicIpAddress" \
+  --output text
+
+#### Step-by-Step: Create an AMI from a Running EC2 Instance ###
+
+### STEP4: Get the Instance ID.
+aws ec2 describe-instances \
+  --filters "Name=tag:Name,Values=WebServer-CLI" \
+  --query "Reservations[*].Instances[*].InstanceId" \
+  --output text
+
+### STEP5: Create the AMI.
+aws ec2 create-image \
+  --instance-id i-01a1def1f6cxxxxx \
+  --name "apache-webserverCLI-ami" \
+  --description "AMI with Apache2 pre-installed via CLI" \
+  --no-reboot
+
+### STEP6: Monitor the AMI Status.
+aws ec2 describe-images \
+  --image-ids ami-0c2ce049f9b3xxxxx \
+  --query "Images[*].State" \
+  --output text
+
+### STEP7: Get the VPC ID.
+aws ec2 describe-vpcs \
+  --query 'Vpcs[*].{ID:VpcId,Name:Tags[?Key==`Name`]|[0].Value}' \
+  --output table
+
+### STEP8: List Subnets in That VPC.
+aws ec2 describe-subnets \
+  --filters "Name=vpc-id,Values=vpc-xxxxxxxx" \
+  --query "Subnets[*].{SubnetID:SubnetId,AZ:AvailabilityZone,CIDR:CidrBlock}" \
+  --output table
+
+### STEP7: Launch a New Instance from the AMI.
+Once the image is available, you can launch a new instance from it;
+aws ec2 run-instances \
+  --image-id ami-0c2ce049f9b3xxxxx \
+  --count 1 \
+  --instance-type t2.micro \
+  --key-name key \
+  --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=WebServer-CLI-from-AMI}]' \
+  --network-interfaces '[{
+    "DeviceIndex": 0,
+    "SubnetId": "subnet-0cdb2485655cxxxxx",
+    "AssociatePublicIpAddress": true,
+    "Groups": ["sg-04b33221344dxxxxx"]
+  }]'
+
+### STEP8: Get the Public IP Address.
+aws ec2 describe-instances \
+  --filters "Name=tag:Name,Values=WebServer-CLI-from-AMI" \
+  --query "Reservations[*].Instances[*].InstanceId" \
+  --output text
