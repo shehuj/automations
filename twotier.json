@@ -1,0 +1,373 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "Adventure Works - Two-Tier Joomla on EC2 (public) + RDS MySQL (private) with custom VPC (2 public, 2 private).",
+    "Parameters": {
+      "VpcCidr": {
+        "Type": "String",
+        "Default": "10.0.0.0/16",
+        "Description": "CIDR block for the VPC"
+      },
+      "PublicSubnet1Cidr": {
+        "Type": "String",
+        "Default": "10.0.1.0/24",
+        "Description": "CIDR block for Public Subnet 1"
+      },
+      "PublicSubnet2Cidr": {
+        "Type": "String",
+        "Default": "10.0.2.0/24",
+        "Description": "CIDR block for Public Subnet 2"
+      },
+      "PrivateSubnet1Cidr": {
+        "Type": "String",
+        "Default": "10.0.11.0/24",
+        "Description": "CIDR block for Private Subnet 1"
+      },
+      "PrivateSubnet2Cidr": {
+        "Type": "String",
+        "Default": "10.0.12.0/24",
+        "Description": "CIDR block for Private Subnet 2"
+      },
+      "KeyName": {
+        "Type": "AWS::EC2::KeyPair::KeyName",
+        "Description": "Name of an existing EC2 KeyPair to enable SSH access"
+      },
+      "InstanceType": {
+        "Type": "String",
+        "Default": "t3.small",
+        "AllowedValues": ["t3.micro", "t3.small", "t3.medium"],
+        "Description": "EC2 instance type for the web server"
+      },
+      "AllowedSSH": {
+        "Type": "String",
+        "Default": "0.0.0.0/0",
+        "Description": "CIDR allowed to SSH to the web instance (restrict for production)"
+      },
+      "DBName": {
+        "Type": "String",
+        "Default": "joomladb",
+        "Description": "Database name for Joomla"
+      },
+      "DBUser": {
+        "Type": "String",
+        "Default": "joomlauser",
+        "Description": "Master username for the RDS instance"
+      },
+      "DBPassword": {
+        "Type": "String",
+        "NoEcho": true,
+        "MinLength": 8,
+        "Description": "Master password for the RDS instance"
+      },
+      "DBAllocatedStorage": {
+        "Type": "Number",
+        "Default": 20,
+        "Description": "Allocated storage (GiB)"
+      },
+      "DBInstanceClass": {
+        "Type": "String",
+        "Default": "db.t3.micro",
+        "AllowedValues": ["db.t3.micro", "db.t3.small", "db.t3.medium"],
+        "Description": "RDS instance class"
+      },
+      "DBEngineVersion": {
+        "Type": "String",
+        "Default": "8.0.35",
+        "Description": "MySQL engine version"
+      },
+      "MultiAZ": {
+        "Type": "String",
+        "AllowedValues": ["true", "false"],
+        "Default": "false",
+        "Description": "Enable Multi-AZ for RDS"
+      },
+      "UbuntuAmiParameter": {
+        "Type": "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>",
+        "Default": "/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id",
+        "Description": "SSM public parameter path for the latest Ubuntu 22.04 LTS AMI"
+      }
+    },
+    "Mappings": {
+      "RegionMap": {
+        "aws-global": { "AZ0": 0, "AZ1": 1 }
+      }
+    },
+    "Resources": {
+      "VPC": {
+        "Type": "AWS::EC2::VPC",
+        "Properties": {
+          "CidrBlock": { "Ref": "VpcCidr" },
+          "EnableDnsHostnames": true,
+          "EnableDnsSupport": true,
+          "Tags": [{ "Key": "Name", "Value": "AdventureWorksVPC" }]
+        }
+      },
+      "InternetGateway": {
+        "Type": "AWS::EC2::InternetGateway",
+        "Properties": {
+          "Tags": [{ "Key": "Name", "Value": "AdventureWorksIGW" }]
+        }
+      },
+      "VPCGatewayAttachment": {
+        "Type": "AWS::EC2::VPCGatewayAttachment",
+        "Properties": {
+          "InternetGatewayId": { "Ref": "InternetGateway" },
+          "VpcId": { "Ref": "VPC" }
+        }
+      },
+  
+      "PublicSubnet1": {
+        "Type": "AWS::EC2::Subnet",
+        "Properties": {
+          "VpcId": { "Ref": "VPC" },
+          "CidrBlock": { "Ref": "PublicSubnet1Cidr" },
+          "AvailabilityZone": { "Fn::Select": [ { "Fn::FindInMap": [ "RegionMap", "aws-global", "AZ0" ] }, { "Fn::GetAZs": "" } ] },
+          "MapPublicIpOnLaunch": true,
+          "Tags": [{ "Key": "Name", "Value": "PublicSubnet1" }]
+        }
+      },
+      "PublicSubnet2": {
+        "Type": "AWS::EC2::Subnet",
+        "Properties": {
+          "VpcId": { "Ref": "VPC" },
+          "CidrBlock": { "Ref": "PublicSubnet2Cidr" },
+          "AvailabilityZone": { "Fn::Select": [ { "Fn::FindInMap": [ "RegionMap", "aws-global", "AZ1" ] }, { "Fn::GetAZs": "" } ] },
+          "MapPublicIpOnLaunch": true,
+          "Tags": [{ "Key": "Name", "Value": "PublicSubnet2" }]
+        }
+      },
+  
+      "PrivateSubnet1": {
+        "Type": "AWS::EC2::Subnet",
+        "Properties": {
+          "VpcId": { "Ref": "VPC" },
+          "CidrBlock": { "Ref": "PrivateSubnet1Cidr" },
+          "AvailabilityZone": { "Fn::Select": [ { "Fn::FindInMap": [ "RegionMap", "aws-global", "AZ0" ] }, { "Fn::GetAZs": "" } ] },
+          "MapPublicIpOnLaunch": false,
+          "Tags": [{ "Key": "Name", "Value": "PrivateSubnet1" }]
+        }
+      },
+      "PrivateSubnet2": {
+        "Type": "AWS::EC2::Subnet",
+        "Properties": {
+          "VpcId": { "Ref": "VPC" },
+          "CidrBlock": { "Ref": "PrivateSubnet2Cidr" },
+          "AvailabilityZone": { "Fn::Select": [ { "Fn::FindInMap": [ "RegionMap", "aws-global", "AZ1" ] }, { "Fn::GetAZs": "" } ] },
+          "MapPublicIpOnLaunch": false,
+          "Tags": [{ "Key": "Name", "Value": "PrivateSubnet2" }]
+        }
+      },
+  
+      "PublicRouteTable": {
+        "Type": "AWS::EC2::RouteTable",
+        "Properties": {
+          "VpcId": { "Ref": "VPC" },
+          "Tags": [{ "Key": "Name", "Value": "PublicRouteTable" }]
+        }
+      },
+      "PublicRoute": {
+        "Type": "AWS::EC2::Route",
+        "DependsOn": "VPCGatewayAttachment",
+        "Properties": {
+          "RouteTableId": { "Ref": "PublicRouteTable" },
+          "DestinationCidrBlock": "0.0.0.0/0",
+          "GatewayId": { "Ref": "InternetGateway" }
+        }
+      },
+      "PublicSubnet1RouteTableAssociation": {
+        "Type": "AWS::EC2::SubnetRouteTableAssociation",
+        "Properties": {
+          "SubnetId": { "Ref": "PublicSubnet1" },
+          "RouteTableId": { "Ref": "PublicRouteTable" }
+        }
+      },
+      "PublicSubnet2RouteTableAssociation": {
+        "Type": "AWS::EC2::SubnetRouteTableAssociation",
+        "Properties": {
+          "SubnetId": { "Ref": "PublicSubnet2" },
+          "RouteTableId": { "Ref": "PublicRouteTable" }
+        }
+      },
+  
+      "PrivateRouteTable1": {
+        "Type": "AWS::EC2::RouteTable",
+        "Properties": {
+          "VpcId": { "Ref": "VPC" },
+          "Tags": [{ "Key": "Name", "Value": "PrivateRouteTable1" }]
+        }
+      },
+      "PrivateRouteTable2": {
+        "Type": "AWS::EC2::RouteTable",
+        "Properties": {
+          "VpcId": { "Ref": "VPC" },
+          "Tags": [{ "Key": "Name", "Value": "PrivateRouteTable2" }]
+        }
+      },
+      "PrivateSubnet1RouteTableAssociation": {
+        "Type": "AWS::EC2::SubnetRouteTableAssociation",
+        "Properties": {
+          "SubnetId": { "Ref": "PrivateSubnet1" },
+          "RouteTableId": { "Ref": "PrivateRouteTable1" }
+        }
+      },
+      "PrivateSubnet2RouteTableAssociation": {
+        "Type": "AWS::EC2::SubnetRouteTableAssociation",
+        "Properties": {
+          "SubnetId": { "Ref": "PrivateSubnet2" },
+          "RouteTableId": { "Ref": "PrivateRouteTable2" }
+        }
+      },
+  
+      "WebSecurityGroup": {
+        "Type": "AWS::EC2::SecurityGroup",
+        "Properties": {
+          "VpcId": { "Ref": "VPC" },
+          "GroupDescription": "Allow HTTP/HTTPS from the internet and SSH from AllowedSSH",
+          "SecurityGroupIngress": [
+            { "IpProtocol": "tcp", "FromPort": 80, "ToPort": 80, "CidrIp": "0.0.0.0/0" },
+            { "IpProtocol": "tcp", "FromPort": 443, "ToPort": 443, "CidrIp": "0.0.0.0/0" },
+            { "IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "CidrIp": { "Ref": "AllowedSSH" } }
+          ],
+          "SecurityGroupEgress": [
+            { "IpProtocol": "-1", "CidrIp": "0.0.0.0/0" }
+          ],
+          "Tags": [{ "Key": "Name", "Value": "WebSG" }]
+        }
+      },
+  
+      "DBSecurityGroup": {
+        "Type": "AWS::EC2::SecurityGroup",
+        "Properties": {
+          "VpcId": { "Ref": "VPC" },
+          "GroupDescription": "Allow MySQL from web tier only",
+          "SecurityGroupIngress": [
+            {
+              "IpProtocol": "tcp",
+              "FromPort": 3306,
+              "ToPort": 3306,
+              "SourceSecurityGroupId": { "Ref": "WebSecurityGroup" }
+            }
+          ],
+          "SecurityGroupEgress": [
+            { "IpProtocol": "-1", "CidrIp": "0.0.0.0/0" }
+          ],
+          "Tags": [{ "Key": "Name", "Value": "DBSG" }]
+        }
+      },
+  
+      "DBSubnetGroup": {
+        "Type": "AWS::RDS::DBSubnetGroup",
+        "Properties": {
+          "DBSubnetGroupDescription": "Private subnets for RDS MySQL",
+          "SubnetIds": [
+            { "Ref": "PrivateSubnet1" },
+            { "Ref": "PrivateSubnet2" }
+          ],
+          "Tags": [{ "Key": "Name", "Value": "JoomlaDBSubnets" }]
+        }
+      },
+  
+      "JoomlaDB": {
+        "Type": "AWS::RDS::DBInstance",
+        "Properties": {
+          "DBName": { "Ref": "DBName" },
+          "Engine": "mysql",
+          "EngineVersion": { "Ref": "DBEngineVersion" },
+          "MasterUsername": { "Ref": "DBUser" },
+          "MasterUserPassword": { "Ref": "DBPassword" },
+          "AllocatedStorage": { "Ref": "DBAllocatedStorage" },
+          "DBInstanceClass": { "Ref": "DBInstanceClass" },
+          "MultiAZ": { "Fn::Equals": [ { "Ref": "MultiAZ" }, "true" ] },
+          "PubliclyAccessible": false,
+          "StorageType": "gp3",
+          "BackupRetentionPeriod": 7,
+          "DeletionProtection": false,
+          "VPCSecurityGroups": [ { "Fn::GetAtt": [ "DBSecurityGroup", "GroupId" ] } ],
+          "DBSubnetGroupName": { "Ref": "DBSubnetGroup" }
+        },
+        "DeletionPolicy": "Snapshot",
+        "UpdateReplacePolicy": "Snapshot"
+      },
+  
+      "WebInstanceProfileRole": {
+        "Type": "AWS::IAM::Role",
+        "Properties": {
+          "AssumeRolePolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": { "Service": ["ec2.amazonaws.com"] },
+                "Action": ["sts:AssumeRole"]
+              }
+            ]
+          },
+          "ManagedPolicyArns": [
+            "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+          ],
+          "Path": "/"
+        }
+      },
+  
+      "WebInstanceProfile": {
+        "Type": "AWS::IAM::InstanceProfile",
+        "Properties": {
+          "Path": "/",
+          "Roles": [ { "Ref": "WebInstanceProfileRole" } ]
+        }
+      },
+  
+      "WebServer": {
+        "Type": "AWS::EC2::Instance",
+        "Properties": {
+          "ImageId": { "Ref": "UbuntuAmiParameter" },
+          "InstanceType": { "Ref": "InstanceType" },
+          "IamInstanceProfile": { "Ref": "WebInstanceProfile" },
+          "KeyName": { "Ref": "KeyName" },
+          "NetworkInterfaces": [
+            {
+              "AssociatePublicIpAddress": true,
+              "DeviceIndex": 0,
+              "SubnetId": { "Ref": "PublicSubnet1" },
+              "GroupSet": [ { "Ref": "WebSecurityGroup" } ]
+            }
+          ],
+          "Tags": [{ "Key": "Name", "Value": "JoomlaWebServer" }],
+          "UserData": {
+            "Fn::Base64": {
+              "Fn::Sub": [
+                "#!/bin/bash -xe\napt-get update -y\napt-get install -y apache2 php libapache2-mod-php php-mysql php-xml php-gd php-zip php-curl php-mbstring unzip curl\nsystemctl enable apache2\nsystemctl start apache2\ncd /tmp\nJOOMLA_URL=$(curl -s https://api.github.com/repos/joomla/joomla-cms/releases/latest | grep browser_download_url | grep -i full | cut -d '\"' -f4)\nif [ -z \"$JOOMLA_URL\" ]; then JOOMLA_URL=https://downloads.joomla.org/cms/joomla4/latest/joomla_latest-full_package.zip; fi\ncurl -L \"$JOOMLA_URL\" -o joomla.zip || exit 1\nrm -rf /var/www/html/*\nunzip joomla.zip -d /var/www/html\nchown -R www-data:www-data /var/www/html\nfind /var/www/html -type d -exec chmod 755 {} \\;\nfind /var/www/html -type f -exec chmod 644 {} \\;\ncat >/var/www/html/configuration.php <<'EOF'\n<?php\nclass JConfig {\n public $offline = '0';\n public $host = '${DBEndpoint}';\n public $user = '${DBUser}';\n public $password = '${DBPassword}';\n public $db = '${DBName}';\n public $dbtype = 'mysqli';\n public $dbprefix = 'jos_';\n public $live_site = '';\n public $secret = '$(openssl rand -hex 16)';\n public $gzip = '0';\n public $error_reporting = 'default';\n public $helpurl = '';\n public $ftp_host = '';\n public $ftp_port = '21';\n public $ftp_user = '';\n public $ftp_pass = '';\n public $ftp_root = '';\n public $ftp_enable = '0';\n public $offset = 'UTC';\n public $mailonline = '1';\n public $mailer = 'mail';\n public $mailfrom = 'admin@example.com';\n public $fromname = 'Adventure Works';\n public $sendmail = '/usr/sbin/sendmail';\n public $smtpauth = '0';\n public $smtpuser = '';\n public $smtppass = '';\n public $smtphost = 'localhost';\n public $smtpsecure = 'none';\n public $smtpport = '25';\n}\n?>\nEOF\nrm -rf /var/www/html/installation || true\nsystemctl reload apache2\n",
+                {
+                  "DBEndpoint": { "Fn::GetAtt": [ "JoomlaDB", "Endpoint.Address" ] },
+                  "DBUser": { "Ref": "DBUser" },
+                  "DBPassword": { "Ref": "DBPassword" },
+                  "DBName": { "Ref": "DBName" }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "Outputs": {
+      "VPCId": {
+        "Description": "VPC Id",
+        "Value": { "Ref": "VPC" }
+      },
+      "PublicWebURL": {
+        "Description": "Joomla site URL (HTTP)",
+        "Value": { "Fn::Sub": "http://${WebServer.PublicDnsName}" }
+      },
+      "WebInstanceId": {
+        "Description": "EC2 Instance ID",
+        "Value": { "Ref": "WebServer" }
+      },
+      "RDSEndpoint": {
+        "Description": "RDS endpoint",
+        "Value": { "Fn::GetAtt": [ "JoomlaDB", "Endpoint.Address" ] }
+      },
+      "RDSPort": {
+        "Description": "RDS port",
+        "Value": { "Fn::GetAtt": [ "JoomlaDB", "Endpoint.Port" ] }
+      }
+    }
+  }
